@@ -14,6 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+#训练入口
 """Script to fine-tune Stable Video Diffusion for single-step inference."""
 import argparse
 import random

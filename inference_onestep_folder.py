@@ -1,5 +1,5 @@
 # run_inference.py
-
+#批量推理入口（有一组视频与对应mask，用他生成抠像结果）
 import argparse
 import os
 import random
@@ -240,8 +240,8 @@ def _augment_with_temporal_occlusion(mask_frames, num_occlusions, occlusion_shap
 # =================================================================================
 
 if __name__ == "__main__":
+    #一、参数配置
     parser = argparse.ArgumentParser(description="Batch inference script using the VideoInferencePipeline.")
-
     # --- Paths ---
     parser.add_argument("--base_model_path", type=str,
                         default="checkpoints/stabilityai/stable-video-diffusion-img2vid-xt",
@@ -253,6 +253,12 @@ if __name__ == "__main__":
     parser.add_argument("--mask_root_path", type=str, required=True,
                         help="Root folder containing input mask sequences.")
     parser.add_argument("--output_dir", type=str, default="output_batch", help="Directory to save all outputs.")
+
+    #basemodel_path：原始的stable video diffusion模型
+    #unet_checkpoint_path：videomama训练好的模型权重
+    #image_root_path：输入视频帧文件夹
+    #mask_root_path：输入视频帧对应的mask文件夹
+    #output_dir：输出文件夹
 
     # --- Inference Config ---
     parser.add_argument("--num_frames", type=int, default=16, help="Number of frames to generate.")
@@ -266,6 +272,10 @@ if __name__ == "__main__":
     parser.add_argument("--mixed_precision", type=str, default="fp16", choices=["no", "fp16", "bf16"],
                         help="Mixed precision.")
     parser.add_argument("--seed", type=int, default=42, help="Reproducibility seed.")
+    #mask_cond_mode：mask conditioning模式(怎么给模型，默认VAE)
+    #mixed_precision：混合精度（fp16/bf16 加速省显存）
+    #seed 随机种子，便于复现结果
+
 
     # --- Mask Augmentation and Saving Config ---
     parser.add_argument("--mask_augmentation", type=str, default="none",
@@ -292,13 +302,13 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if args.num_input_frames is None:
         args.num_input_frames = args.num_frames
-
+    #二、加载模型 真正推理能力来自pipline_svd_mask.py这个类
     pipeline = VideoInferencePipeline(
         base_model_path=args.base_model_path,
         unet_checkpoint_path=args.unet_checkpoint_path,
         weight_dtype=torch.float16 if args.mixed_precision == "fp16" else torch.bfloat16
     )
-
+    #三、遍历视频文件夹
     video_folders = sorted(
         [d for d in os.listdir(args.image_root_path) if os.path.isdir(os.path.join(args.image_root_path, d))])
 
@@ -317,7 +327,7 @@ if __name__ == "__main__":
         if not os.path.isdir(mask_folder_path):
             print(f"Warning: Mask folder not found for '{video_name}' at '{mask_folder_path}'. Skipping.")
             continue
-
+    #四、加载图片和mask
         try:
             cond_frames, mask_frames = load_image_sequence(
                 image_folder_path, mask_folder_path,
@@ -355,7 +365,7 @@ if __name__ == "__main__":
                 print(f"Saving {len(mask_frames)} processed masks to: {mask_save_folder}")
                 for i, frame in enumerate(mask_frames):
                     frame.save(os.path.join(mask_save_folder, f"frame_{i:04d}.png"))
-
+    #五、推理和保存结果
             print("Running inference...")
             generated_frames = pipeline.run(
                 cond_frames=cond_frames,

@@ -1,5 +1,5 @@
 # pipeline_svd_masked.py
-
+# 推理流程的核心封装。
 import inspect
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Union
@@ -69,7 +69,7 @@ class StableVideoDiffusionPipelineOutput(BaseOutput):
     """
     frames: Union[List[List[PIL.Image.Image]], np.ndarray, torch.Tensor]
 
-
+#比较标准的diffusers pipline，支持多步扩散模型
 class StableVideoDiffusionPipelineWithMask(DiffusionPipeline):
     r"""
     A custom pipeline based on Stable Video Diffusion that accepts an additional mask for conditioning.
@@ -390,7 +390,7 @@ class StableVideoDiffusionPipelineWithMask(DiffusionPipeline):
             return frames
         return StableVideoDiffusionPipelineOutput(frames=frames)
 
-
+#单步版本  ->685
 class StableVideoDiffusionPipelineOnestepWithMask(DiffusionPipeline):
     r"""
     A custom pipeline based on Stable Video Diffusion that accepts an additional mask for conditioning.
@@ -681,7 +681,7 @@ class StableVideoDiffusionPipelineOnestepWithMask(DiffusionPipeline):
             return frames
         return StableVideoDiffusionPipelineOutput(frames=frames)
 
-
+#用cross_attention方式加mask
 class StableVideoDiffusionPipelineWithCrossAtnnMask(DiffusionPipeline):
     model_cpu_offload_seq = "image_encoder->unet->vae"
     _callback_tensor_inputs = ["latents"]
@@ -834,7 +834,7 @@ from torchvision import transforms
 from diffusers import AutoencoderKLTemporalDecoder, UNetSpatioTemporalConditionModel
 from transformers import CLIPImageProcessor, CLIPVisionModelWithProjection
 
-
+#inference_onestep_folder 调用的 函数
 class VideoInferencePipeline:
     """
     A reusable pipeline for single-step video diffusion inference.
@@ -866,6 +866,12 @@ class VideoInferencePipeline:
                                                                                variant="fp16")
             self.vae = AutoencoderKLTemporalDecoder.from_pretrained(base_model_path, subfolder="vae", variant="fp16")
             self.unet = UNetSpatioTemporalConditionModel.from_pretrained(unet_checkpoint_path, subfolder="unet")
+        #feature_extrator给clip图像编码器预处理
+        #image_encoder clip图像编码器 提取语义信息
+        #vae 图像编码解码
+
+        #unet videomama核心 接受“噪声+视频图像特征+mask特征”->输出预测
+
         except Exception as e:
             raise IOError(f"Fatal error loading models: {e}")
 
@@ -878,6 +884,7 @@ class VideoInferencePipeline:
 
     def run(self, cond_frames, mask_frames, seed=42, mask_cond_mode="vae", fps=7, motion_bucket_id=127,
             noise_aug_strength=0.0):
+        #输入 cond_frames 原始视频帧 mask_frames 对应mask
         """
         Runs the core inference process on a sequence of conditioning and mask frames.
 
@@ -894,6 +901,7 @@ class VideoInferencePipeline:
             list[Image.Image]: A list of the generated video frames as PIL Images.
         """
         # --- 1. Prepare Tensors ---
+        #第一步 pil转tensor [B,T,C,H,W]
         cond_video_tensor = self._pil_to_tensor(cond_frames).to(self.device)
         mask_video_tensor = self._pil_to_tensor(mask_frames).to(self.device)
 
@@ -902,6 +910,7 @@ class VideoInferencePipeline:
 
         with torch.no_grad():
             # --- 2. Get CLIP Image Embeddings ---
+            #第二步 用第一帧做clip图像特征
             first_frame_tensor = cond_video_tensor[:, 0, :, :, :]
             pixel_values_for_clip = self._resize_with_antialiasing(first_frame_tensor, (224, 224))
             pixel_values_for_clip = ((pixel_values_for_clip + 1.0) / 2.0).clamp(0, 1)
@@ -910,9 +919,10 @@ class VideoInferencePipeline:
             encoder_hidden_states = torch.zeros_like(image_embeddings).unsqueeze(1)
 
             # --- 3. Prepare Latents ---
+            #第三步 原视频编码到latent空间
             cond_latents = self._tensor_to_vae_latent(cond_video_tensor.to(self.weight_dtype))
             cond_latents = cond_latents / self.vae.config.scaling_factor
-
+            #第四步 把mask编程latent
             if mask_cond_mode == "vae":
                 mask_latents = self._tensor_to_vae_latent(mask_video_tensor.to(self.weight_dtype))
                 mask_latents = mask_latents / self.vae.config.scaling_factor
@@ -927,16 +937,20 @@ class VideoInferencePipeline:
                 raise ValueError(f"Unknown mask_cond_mode: {mask_cond_mode}")
 
             # --- 4. Run UNet Single-Step Inference ---
+            #第五步 准备随机噪声
             generator = torch.Generator(device=self.device).manual_seed(seed)
             noisy_latents = torch.randn(cond_latents.shape, generator=generator, device=self.device,
                                         dtype=self.weight_dtype)
             timesteps = torch.full((1,), 1.0, device=self.device, dtype=torch.long)
-            added_time_ids = self._get_add_time_ids(fps, motion_bucket_id, noise_aug_strength, batch_size=1)
 
+            added_time_ids = self._get_add_time_ids(fps, motion_bucket_id, noise_aug_strength, batch_size=1)
+            #第六步 拼接输入送进unet
             unet_input = torch.cat([noisy_latents, cond_latents, mask_latents], dim=2)
+            #12通道
             pred_latents = self.unet(unet_input, timesteps, encoder_hidden_states, added_time_ids=added_time_ids).sample
 
             # --- 5. Decode Latents to Video Frames ---
+            #第七步 把latent解码回图片
             pred_latents = (1 / self.vae.config.scaling_factor) * pred_latents.squeeze(0)
 
             frames = []
@@ -954,6 +968,7 @@ class VideoInferencePipeline:
 
     def _pil_to_tensor(self, frames: list[Image.Image]):
         """Converts a list of PIL images to a normalized video tensor."""
+        #像素范围[0.1]->[-1,1] 扩散模型范围一般为[-1,1]
         video_tensor = torch.stack([transforms.ToTensor()(f) for f in frames]).unsqueeze(0)
         return video_tensor * 2.0 - 1.0
 
